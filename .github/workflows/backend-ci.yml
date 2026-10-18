@@ -1,0 +1,70 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx1g -Xms512m'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: o2o_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6369"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Run unit tests
+        run: mvn test -DskipTests=false -B
+
+      - name: Build package
+        run: mvn clean package -DskipTests -B
+
+      - name: Build Docker image
+        run: docker build -t hoang03418/backend:${{ github.sha }} -f yudao-server/Dockerfile .
+
+      - name: Run Trivy security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'hoang03418/backend:${{ github.sha }}'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push to Docker Hub (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          docker tag hoang03418/backend:${{ github.sha }} hoang03418/backend:latest
+          docker push hoang03418/backend:${{ github.sha }}
+          docker push hoang03418/backend:latest
